@@ -62,35 +62,6 @@ function Read-NameMap {
     return $map
 }
 
-function Set-NameMapEntry {
-    param([string]$SharedFolder, [string]$Key, [string]$Name)
-
-    if ([string]::IsNullOrWhiteSpace($SharedFolder)) { return $false }
-    if (-not (Test-Path $SharedFolder)) { return $false }
-    if ([string]::IsNullOrWhiteSpace($Key)) { return $false }
-
-    $path = Join-Path $SharedFolder $script:NameMapFile
-    $map  = Read-NameMap -SharedFolder $SharedFolder
-
-    if ([string]::IsNullOrWhiteSpace($Name)) { $map.Remove($Key) | Out-Null }
-    else { $map[$Key] = $Name }
-
-    $temp = "$path.$PID.tmp"
-    try {
-        $obj = New-Object psobject
-        foreach ($k in @($map.Keys | Sort-Object)) {
-            Add-Member -InputObject $obj -MemberType NoteProperty -Name $k -Value $map[$k]
-        }
-        $obj | ConvertTo-Json | Out-File -FilePath $temp -Encoding utf8 -ErrorAction Stop
-        Move-Item -Path $temp -Destination $path -Force -ErrorAction Stop
-        return $true
-    }
-    catch {
-        if (Test-Path $temp) { Remove-Item $temp -Force -ErrorAction SilentlyContinue }
-        return $false
-    }
-}
-
 function Write-MachineReport {
     param(
         [string]$SharedFolder,

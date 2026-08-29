@@ -1169,17 +1169,6 @@ $miShared.Add_Click({
 })
 $menu.Items.Add($miShared) | Out-Null
 
-$miNameMap = New-Object Windows.Controls.MenuItem
-$miNameMap.Header = '開啟 IP 名稱對照表'
-$miNameMap.Add_Click({
-    $folder = [string]$script:Config.SharedFolder
-    if ([string]::IsNullOrWhiteSpace($folder) -or -not (Test-Path $folder)) { return }
-    $path = Join-Path $folder 'names.json'
-    if (-not (Test-Path $path)) { '{}' | Out-File -FilePath $path -Encoding utf8 }
-    Start-Process notepad.exe $path
-})
-$menu.Items.Add($miNameMap) | Out-Null
-
 $miView = New-Object Windows.Controls.MenuItem
 $miView.Header = '檢視方式'
 $viewOptions = [ordered]@{
