@@ -1,0 +1,11 @@
+# 個人設定：視窗位置、共享資料夾路徑、顯示名稱、固定 IP
+config.json
+
+# 執行時產生的檔案
+local-usage-cache.json
+widget.log
+*.tmp
+
+# Windows
+Thumbs.db
+desktop.ini
