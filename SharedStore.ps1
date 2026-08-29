@@ -53,7 +53,24 @@ function Read-NameMap {
     if (-not (Test-Path $path)) { return $map }
 
     try {
-        $obj = Get-Content $path -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json
+        # 這個檔是人用記事本編的，編碼不一定是 UTF-8。
+        # 先照 UTF-8 嚴格解碼，失敗才退回系統 ANSI —— 舊版記事本存的中文名稱
+        # 若當成 UTF-8 讀會變亂碼，而 IP 是 ASCII 不受影響，
+        # 結果就是白名單照常運作、只有名字壞掉，這種半壞狀況很難察覺。
+        $bytes = [IO.File]::ReadAllBytes($path)
+        $text = $null
+        try {
+            $strict = New-Object System.Text.UTF8Encoding($false, $true)
+            $text = $strict.GetString($bytes)
+        }
+        catch {
+            $text = [System.Text.Encoding]::Default.GetString($bytes)
+        }
+
+        # 自己讀位元組就要自己處理 BOM，留著會讓 ConvertFrom-Json 解析失敗
+        if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) { $text = $text.Substring(1) }
+
+        $obj = $text | ConvertFrom-Json
         foreach ($prop in $obj.PSObject.Properties) {
             $map[[string]$prop.Name] = [string]$prop.Value
         }
