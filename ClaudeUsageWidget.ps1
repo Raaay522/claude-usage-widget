@@ -64,7 +64,7 @@ $script:Config = @{
     Topmost         = $true
     BackgroundAlpha = 250
     SharedFolder    = ''
-    ViewMode        = 'ip'  # ip = 依固定 IP；person = 依人；machine = 依電腦
+    ViewMode        = 'ip'  # ip = 依固定 IP；name = 依名稱；machine = 依電腦
     MaxRows         = 0     # 最多列出幾台，0 = 全部；超過的合併成一列「其他 N 台」
     HideAfterDays   = 0     # 超過幾天沒回報就不列出來，0 = 一律列出
     Theme           = 'auto' # auto = 跟隨 Windows 設定；light／dark 手動指定
@@ -724,12 +724,13 @@ function Update-MachineBreakdown {
     }
 
     $mode = [string]$script:Config.ViewMode
+    if ($mode -eq 'person') { $mode = 'name' }   # 舊版設定值，沿用
     if ([string]::IsNullOrWhiteSpace($mode)) { $mode = 'ip' }
 
     $rows = @(Group-Reports -Reports $reports -By $mode -NameMap $nameMap)
 
     switch ($mode) {
-        'person'  { $machinesTitle.Text = '本 5 小時各人佔用（估算）' }
+        'name'    { $machinesTitle.Text = '本 5 小時各名稱佔用（估算）' }
         'machine' { $machinesTitle.Text = '本 5 小時各台佔用（估算）' }
         default   { $machinesTitle.Text = '本 5 小時各 IP 佔用（估算）' }
     }
@@ -1173,7 +1174,7 @@ $miView = New-Object Windows.Controls.MenuItem
 $miView.Header = '檢視方式'
 $viewOptions = [ordered]@{
     '依固定 IP' = 'ip'
-    '依人彙總'  = 'person'
+    '依名稱'    = 'name'
     '依電腦'    = 'machine'
 }
 foreach ($label in $viewOptions.Keys) {
