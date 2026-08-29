@@ -139,13 +139,9 @@ function Read-AllMachineReports {
                 } catch { }
             }
 
-            # 舊版格式沒有 user／displayName，退回用電腦名當識別
+            # 顯示名稱一律由共享的 names.json 決定，回報檔本身不帶名字。
+            # 舊版回報檔可能還有 displayName 欄位，這裡直接忽略。
             $user = [string]$obj.user
-            $display = [string]$obj.displayName
-            if ([string]::IsNullOrWhiteSpace($display)) {
-                if ([string]::IsNullOrWhiteSpace($user)) { $display = [string]$obj.machine }
-                else { $display = $user }
-            }
 
             if ($MaxAgeDays -gt 0 -and $ageMinutes -gt ($MaxAgeDays * 1440)) { continue }
 
@@ -153,7 +149,6 @@ function Read-AllMachineReports {
                 Machine       = [string]$obj.machine
                 User          = $user
                 IP            = [string]$obj.ip
-                DisplayName   = $display
                 UpdatedAt     = [string]$obj.updatedAt
                 AgeMinutes    = $ageMinutes
                 IsStale       = ($ageMinutes -gt $script:StaleMinutes)
@@ -228,8 +223,16 @@ function Group-Reports {
     $groups = @{}
 
     foreach ($r in @($Reports)) {
+        # 名稱只有一個來源：共享的 names.json。查不到就留空，後面用 IP 或電腦名頂替。
+        $resolved = $null
+        if ($r.IP -and $NameMap.ContainsKey($r.IP)) { $resolved = $NameMap[$r.IP] }
+
         switch ($By) {
-            'person' { $key = $r.DisplayName }
+            'person' {
+                # 管理者把同一個人的多個 IP 對到同一個名字，這裡就會自動合併
+                $key = $resolved
+                if ([string]::IsNullOrWhiteSpace($key)) { $key = $r.IP }
+            }
             'machine' {
                 $key = $r.Machine
                 if ($r.User) { $key = '{0}|{1}' -f $r.Machine, $r.User }
@@ -266,7 +269,7 @@ function Group-Reports {
         $g.WeeklyTokens  += $r.WeeklyTokens
         if ($r.IP)          { $g.IPs      += $r.IP }
         if ($r.Machine)     { $g.Machines += $r.Machine }
-        if ($r.DisplayName) { $g.People   += $r.DisplayName }
+        if ($resolved)      { $g.People   += $resolved }
         if (-not $r.IsStale) { $g.ActiveMachines++ }
         if ($r.AgeMinutes -lt $g.MinAgeMinutes) { $g.MinAgeMinutes = $r.AgeMinutes }
     }
@@ -290,10 +293,7 @@ function Group-Reports {
             }
             default {
                 # 對照表裡有名字就顯示名字，IP 退到副標；沒有的話主標直接顯示 IP
-                $named = $null
-                foreach ($ip in $g.IPs) {
-                    if ($NameMap.ContainsKey($ip)) { $named = $NameMap[$ip]; break }
-                }
+                $named = @($g.People)[0]
                 if ($named) {
                     $g.Title  = $named
                     $g.Detail = ((@($g.IPs) + @($g.Machines)) | Where-Object { $_ } | Select-Object -Unique) -join ' · '

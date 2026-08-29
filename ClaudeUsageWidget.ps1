@@ -64,7 +64,6 @@ $script:Config = @{
     Topmost         = $true
     BackgroundAlpha = 250
     SharedFolder    = ''
-    DisplayName     = ''    # 留空就用 Windows 使用者名稱
     ViewMode        = 'ip'  # ip = 依固定 IP；person = 依人；machine = 依電腦
     MaxRows         = 0     # 最多列出幾台，0 = 全部；超過的合併成一列「其他 N 台」
     HideAfterDays   = 0     # 超過幾天沒回報就不列出來，0 = 一律列出
@@ -72,13 +71,6 @@ $script:Config = @{
     CloseToTray     = $true # 按 ✕ 時隱藏到狀態列，而不是真的結束
     StartHidden     = $false# 啟動時直接縮在狀態列，不跳出視窗
     TrayTipShown    = $false# 是否已經提示過「縮到狀態列了」
-}
-
-function Get-DisplayName {
-    if (-not [string]::IsNullOrWhiteSpace($script:Config.DisplayName)) {
-        return [string]$script:Config.DisplayName
-    }
-    return $script:User
 }
 
 <#
@@ -709,7 +701,6 @@ function Update-MachineBreakdown {
         machine       = $script:Machine
         user          = $script:User
         ip            = $script:LocalIP
-        displayName   = (Get-DisplayName)
         updatedAt     = (Get-Date).ToString('o')
         sessionCost   = [math]::Round($localSession.Cost, 6)
         sessionTokens = $sessionTokens
@@ -748,7 +739,6 @@ function Update-MachineBreakdown {
 
     $machines.Children.Clear()
 
-    $selfName = Get-DisplayName
     $sorted = @($rows | Sort-Object -Property SessionCost -Descending)
 
     # 台數多的時候視窗會被撐得很高，超過上限的併成一列，
@@ -759,11 +749,8 @@ function Update-MachineBreakdown {
         $kept = @()
         $rest = @()
         foreach ($r in $sorted) {
-            switch ($mode) {
-                'person'  { $isSelfRow = ($r.GroupKey -eq $selfName) }
-                'machine' { $isSelfRow = ($r.Machines -contains $script:Machine -and $r.People -contains $selfName) }
-                default   { $isSelfRow = ($r.IPs -contains $script:LocalIP) }
-            }
+            # 一律用 IP 認自己：名字由 names.json 決定，不同機器可能同名
+            $isSelfRow = ($r.IPs -contains $script:LocalIP)
             if ($kept.Count -lt $maxRows -or $isSelfRow) { $kept += $r } else { $rest += $r }
         }
         $sorted = $kept
@@ -777,11 +764,7 @@ function Update-MachineBreakdown {
         $pct = 0.0
         if ($null -ne $SessionPercent) { $pct = [double]$SessionPercent * $ratio }
 
-        switch ($mode) {
-            'person'  { $isSelf = ($r.GroupKey -eq $selfName) }
-            'machine' { $isSelf = ($r.Machines -contains $script:Machine -and $r.People -contains $selfName) }
-            default   { $isSelf = ($r.IPs -contains $script:LocalIP) }
-        }
+        $isSelf = ($r.IPs -contains $script:LocalIP)
 
         $where = $r.Detail
         if ($r.IsStale) {
@@ -1185,43 +1168,6 @@ $miShared.Add_Click({
     }
 })
 $menu.Items.Add($miShared) | Out-Null
-
-$miName = New-Object Windows.Controls.MenuItem
-$miName.Header = '設定我的顯示名稱…'
-$miName.Add_Click({
-    Add-Type -AssemblyName Microsoft.VisualBasic
-    $ip = Get-LocalIPv4
-    $current = Get-DisplayName
-    $entered = [Microsoft.VisualBasic.Interaction]::InputBox(
-        "這個名稱會顯示在所有電腦的小工具上。`n本機 IP：$ip`n留空則使用 Windows 使用者名稱（$($script:User)）。",
-        '設定顯示名稱', $current)
-
-    # 使用者按取消時回傳空字串，這裡無法與「刻意清空」區分，一律當作清空處理
-    $script:Config.DisplayName = $entered.Trim()
-    Export-Config
-
-    # 只有已經登記在對照表裡的機器可以改自己的名字。
-    # 若允許未登記的機器自己寫入，白名單就形同虛設了。
-    $folder = [string]$script:Config.SharedFolder
-    if (-not [string]::IsNullOrWhiteSpace($folder) -and -not [string]::IsNullOrWhiteSpace($ip)) {
-        $existing = Read-NameMap -SharedFolder $folder
-        if ($existing.ContainsKey($ip)) {
-            if (Set-NameMapEntry -SharedFolder $folder -Key $ip -Name $script:Config.DisplayName) {
-                Write-Log "已更新共享名稱對照表：$ip -> $($script:Config.DisplayName)"
-            }
-        } else {
-            [Windows.MessageBox]::Show(
-                ("這台的 IP（{0}）還沒登記在名稱對照表裡，所以不會上傳用量。`n`n" +
-                 "請管理者用右鍵選單的「開啟 IP 名稱對照表」把這個 IP 加進去。") -f $ip,
-                '尚未登記', 'OK', 'Information') | Out-Null
-            Write-Log "IP $ip 未登記，未寫入名稱對照表"
-        }
-    }
-
-    Write-Log "顯示名稱設定為：$(Get-DisplayName)"
-    Update-Widget
-})
-$menu.Items.Add($miName) | Out-Null
 
 $miNameMap = New-Object Windows.Controls.MenuItem
 $miNameMap.Header = '開啟 IP 名稱對照表'
