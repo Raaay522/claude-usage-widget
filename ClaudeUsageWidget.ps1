@@ -40,8 +40,6 @@ $script:CachePath    = Join-Path $script:Root 'local-usage-cache.json'
 $script:CredPath     = Join-Path $env:USERPROFILE '.claude\.credentials.json'
 $script:ProjectsRoot = Join-Path $env:USERPROFILE '.claude\projects'
 $script:UsageUrl     = 'https://api.anthropic.com/api/oauth/usage'
-$script:Machine      = $env:COMPUTERNAME
-$script:User         = $env:USERNAME
 
 . (Join-Path $script:Root 'LocalUsage.ps1')
 . (Join-Path $script:Root 'SharedStore.ps1')
@@ -78,7 +76,7 @@ $script:HideAfterDays = 30   # 超過這麼多天沒回報就不列出來
 # ── 共享資料夾（寫死）────────────────────────────────────────
 # 部署到新環境時只要改這一行。連不上時小工具會自動只顯示本機用量，
 # 不會出錯也不會卡住，所以筆電帶出公司照樣能用。
-$script:SharedFolder = '\\NAS\ClaudeUsage'
+$script:SharedFolder = 'T:\claude_usage'
 
 <#
     取得這台電腦對外的 IPv4 位址。
@@ -664,7 +662,20 @@ function Test-SharedFolderAvailable {
     $folder = $script:SharedFolder
     if ([string]::IsNullOrWhiteSpace($folder)) { return $false }
 
-    if ($folder -match '^\\\\([^\\]+)') {
+    # 映射磁碟機（例如 T:\）背後也是網路位置，斷線時一樣會卡。
+    # 先查出它對應的 UNC，後面才有主機名可以探測。
+    # 注意這裡另存一個變數：探測用解析出來的主機，但最後檢查的仍是原本那個路徑，
+    # 否則會變成檢查分享的根目錄，子資料夾不存在也會被判定為正常。
+    $probeTarget = $folder
+    if ($folder -match '^([A-Za-z]):') {
+        $letter = $matches[1] + ':'
+        try {
+            $conn = Get-CimInstance Win32_NetworkConnection -Filter "LocalName='$letter'" -ErrorAction Stop
+            if ($conn -and $conn.RemoteName) { $probeTarget = [string]$conn.RemoteName }
+        } catch { }
+    }
+
+    if ($probeTarget -match '^\\\\([^\\]+)') {
         $server = $matches[1]
         $client = $null
         try {
@@ -791,8 +802,6 @@ function Update-MachineBreakdown {
     }
 
     $report = @{
-        machine       = $script:Machine
-        user          = $script:User
         ip            = $script:LocalIP
         updatedAt     = (Get-Date).ToString('o')
         sessionCost   = [math]::Round($localSession.Cost, 6)

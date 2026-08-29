@@ -15,26 +15,18 @@ $script:StaleMinutes = 20
 $script:NameMapFile = 'names.json'
 
 <#
-    回報檔名以 IP 為主、Windows 使用者名為輔。
+    回報檔名就是 IP，一台一個檔。
 
-    用 IP 當主要識別是因為固定 IP 由網管統一配發，比電腦名可靠；
-    但同一台電腦仍可能有不同 Windows 使用者各自跑 Claude Code（各自有獨立的 ~/.claude），
-    那種情況兩份回報的 IP 會相同，所以檔名再帶上使用者名避免互相覆蓋。
+    同一台電腦若有不同 Windows 使用者各自跑 Claude Code，兩者的 IP 相同，
+    會寫進同一個檔、後寫的覆蓋先寫的 —— 那是刻意的：以 IP 為單位計算用量，
+    不細分到個別使用者。
 #>
 function Get-MachineReportPath {
-    param([string]$SharedFolder, [string]$Machine, [string]$User, [string]$IP)
+    param([string]$SharedFolder, [string]$IP)
 
-    $safeUser = $User -replace '[^\w\-\.]', '_'
-    if (-not [string]::IsNullOrWhiteSpace($IP)) {
-        $safeIP = $IP -replace '[^\w\-\.]', '_'
-        if ([string]::IsNullOrWhiteSpace($safeUser)) { return (Join-Path $SharedFolder "$safeIP.json") }
-        return (Join-Path $SharedFolder "$safeIP`_$safeUser.json")
-    }
-
-    # 取不到 IP 時退回用電腦名，功能不會因此中斷
-    $safeMachine = $Machine -replace '[^\w\-\.]', '_'
-    if ([string]::IsNullOrWhiteSpace($safeUser)) { return (Join-Path $SharedFolder "$safeMachine.json") }
-    return (Join-Path $SharedFolder "$safeMachine`_$safeUser.json")
+    if ([string]::IsNullOrWhiteSpace($IP)) { return $null }
+    $safeIP = $IP -replace '[^\w\-\.]', '_'
+    return (Join-Path $SharedFolder "$safeIP.json")
 }
 
 <#
@@ -88,7 +80,8 @@ function Write-MachineReport {
     if ([string]::IsNullOrWhiteSpace($SharedFolder)) { return $false }
     if (-not (Test-Path $SharedFolder)) { return $false }
 
-    $target = Get-MachineReportPath -SharedFolder $SharedFolder -Machine $Report.machine -User $Report.user -IP $Report.ip
+    $target = Get-MachineReportPath -SharedFolder $SharedFolder -IP $Report.ip
+    if (-not $target) { return $false }   # 取不到 IP 就無從識別，不寫
     $temp   = "$target.$PID.tmp"
 
     try {
@@ -117,7 +110,7 @@ function Read-AllMachineReports {
         if ($file.Name -eq $script:NameMapFile) { continue }   # 名稱對照表不是機器回報
         try {
             $obj = Get-Content $file.FullName -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json
-            if (-not $obj.machine) { continue }
+            if (-not $obj.ip) { continue }
 
             $ageMinutes = [double]::PositiveInfinity
             if ($obj.updatedAt) {
@@ -127,15 +120,12 @@ function Read-AllMachineReports {
                 } catch { }
             }
 
-            # 顯示名稱一律由共享的 names.json 決定，回報檔本身不帶名字。
-            # 舊版回報檔可能還有 displayName 欄位，這裡直接忽略。
-            $user = [string]$obj.user
+            # 回報檔只帶 IP 與數字，名稱由共享的 names.json 決定。
+            # 舊版檔案可能還有 machine／user／displayName，一律忽略。
 
             if ($MaxAgeDays -gt 0 -and $ageMinutes -gt ($MaxAgeDays * 1440)) { continue }
 
             $reports += [pscustomobject]@{
-                Machine       = [string]$obj.machine
-                User          = $user
                 IP            = [string]$obj.ip
                 UpdatedAt     = [string]$obj.updatedAt
                 AgeMinutes    = $ageMinutes
@@ -174,7 +164,7 @@ function Group-Reports {
     $groups = @{}
 
     foreach ($r in @($Reports)) {
-        # 名稱只有一個來源：共享的 names.json。查不到就留空，後面用 IP 或電腦名頂替。
+        # 名稱只有一個來源：共享的 names.json。查不到就留空，後面直接顯示 IP。
         $resolved = $null
         if ($r.IP -and $NameMap.ContainsKey($r.IP)) { $resolved = $NameMap[$r.IP] }
 
@@ -184,10 +174,7 @@ function Group-Reports {
                 $key = $resolved
                 if ([string]::IsNullOrWhiteSpace($key)) { $key = $r.IP }
             }
-            default {
-                $key = $r.IP
-                if ([string]::IsNullOrWhiteSpace($key)) { $key = $r.Machine }
-            }
+            default { $key = $r.IP }
         }
         if ([string]::IsNullOrWhiteSpace($key)) { $key = '(未知)' }
 
@@ -197,8 +184,7 @@ function Group-Reports {
                 Title          = ''
                 Detail         = ''
                 IPs            = @()
-                Machines       = @()
-                People         = @()
+                Names          = @()
                 SessionCost    = 0.0
                 SessionTokens  = 0.0
                 WeeklyCost     = 0.0
@@ -214,9 +200,8 @@ function Group-Reports {
         $g.SessionTokens += $r.SessionTokens
         $g.WeeklyCost    += $r.WeeklyCost
         $g.WeeklyTokens  += $r.WeeklyTokens
-        if ($r.IP)          { $g.IPs      += $r.IP }
-        if ($r.Machine)     { $g.Machines += $r.Machine }
-        if ($resolved)      { $g.People   += $resolved }
+        if ($r.IP)          { $g.IPs   += $r.IP }
+        if ($resolved)      { $g.Names += $resolved }
         if (-not $r.IsStale) { $g.ActiveMachines++ }
         if ($r.AgeMinutes -lt $g.MinAgeMinutes) { $g.MinAgeMinutes = $r.AgeMinutes }
     }
@@ -224,26 +209,24 @@ function Group-Reports {
     foreach ($key in @($groups.Keys)) {
         $g = $groups[$key]
         $g.IsStale   = ($g.ActiveMachines -eq 0)
-        $g.IPs       = @($g.IPs      | Select-Object -Unique)
-        $g.Machines  = @($g.Machines | Select-Object -Unique)
-        $g.People    = @($g.People   | Select-Object -Unique)
+        $g.IPs   = @($g.IPs   | Select-Object -Unique)
+        $g.Names = @($g.Names | Select-Object -Unique)
 
         switch ($By) {
             'name' {
                 $g.Title  = $key
-                $g.Detail = ($g.Machines -join '、')
-                if ($g.Machines.Count -gt 1) { $g.Detail = '{0} 台：{1}' -f $g.Machines.Count, ($g.Machines -join '、') }
+                $g.Detail = ($g.IPs -join '、')
+                if ($g.IPs.Count -gt 1) { $g.Detail = '{0} 個 IP：{1}' -f $g.IPs.Count, ($g.IPs -join '、') }
             }
             default {
-                # 對照表裡有名字就顯示名字，IP 退到副標；沒有的話主標直接顯示 IP
-                $named = @($g.People)[0]
+                # 對照表裡有名字就顯示名字、IP 退到副標；沒有的話主標直接顯示 IP
+                $named = @($g.Names)[0]
                 if ($named) {
                     $g.Title  = $named
-                    $g.Detail = ((@($g.IPs) + @($g.Machines)) | Where-Object { $_ } | Select-Object -Unique) -join ' · '
+                    $g.Detail = ($g.IPs -join '、')
                 } else {
-                    # 對照表還沒建立時，主標顯示 IP，副標把人名與電腦名帶上才認得出是誰
                     $g.Title  = $key
-                    $g.Detail = ((@($g.People) + @($g.Machines)) | Where-Object { $_ } | Select-Object -Unique) -join ' · '
+                    $g.Detail = ''
                 }
             }
         }

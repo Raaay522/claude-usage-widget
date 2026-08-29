@@ -48,13 +48,14 @@ powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\ClaudeUsageWidget\Ins
 
 1. 把整個 `ClaudeUsageWidget` 資料夾複製過去（放哪都可以，建議一樣放在使用者家目錄）
 2. 執行上面那行 `Install.ps1`
-3. 用記事本打開 `ClaudeUsageWidget.ps1`，把共享資料夾那一行改成你的實際路徑：
+3. 確認這台的 `T:` 有對應到跟其他台**同一個**網路位置
+
+   程式預設用 `T:\claude_usage`，一般不用改。若你的環境是別的路徑，
+   用記事本打開 `ClaudeUsageWidget.ps1` 改開頭那一行：
 
    ```powershell
-   $script:SharedFolder = '\\NAS\ClaudeUsage'
+   $script:SharedFolder = 'T:\claude_usage'
    ```
-
-   每台都要是**同一個**路徑（NAS、或某台電腦分享出來的資料夾都可以）
 4. 由**管理者**到共享資料夾，用記事本編輯 `names.json`，把每台的 IP 與名稱填進去
 
 第 4 步是必要的：`names.json` 同時是白名單，**沒登記的機器不會上傳用量**。
@@ -151,7 +152,7 @@ powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\ClaudeUsageWidget\Ins
 ### 怎麼分辨「誰是誰」
 
 主要識別是**固定 IP**，因為 IP 由網管統一配發，比電腦名可靠。
-回報檔案也以 IP 命名（例如 `192.168.1.20_ming.json`）。
+回報檔案就以 IP 命名，一個 IP 一個檔（例如 `192.168.1.20.json`）。
 
 IP **一律自動偵測**，不提供手動指定——手動填的值可能跟實際網路狀態對不上，
 白名單比對就會失準。偵測時排除 loopback 與 `169.254.*`（那是網路沒接通時系統
@@ -160,9 +161,9 @@ IP **一律自動偵測**，不提供手動指定——手動填的值可能跟�
 > **前提：IP 真的要是固定的。** 在路由器上做 DHCP 保留，或在每台設定靜態 IP 都可以。
 > 如果 IP 會隨機變動，同一個人換到新 IP 就會被當成另一個人。
 
-檔名同時帶上 Windows 使用者名，是為了處理「同一台電腦有不同 Windows 使用者各自跑
-Claude Code」的情況（各自有獨立的 `~/.claude`）——這時兩份回報的 IP 相同，
-檔案不會互相覆蓋，畫面上則會**合併成同一個 IP** 顯示。
+同一台電腦若有不同 Windows 使用者各自跑 Claude Code，兩者的 IP 相同，
+會寫進同一個檔、後寫的覆蓋先寫的——這是刻意的：**用量以 IP 為單位計算，
+不細分到個別使用者**。
 
 ### 名字怎麼設定
 
@@ -170,9 +171,9 @@ Claude Code」的情況（各自有獨立的 `~/.claude`）——這時兩份回
 完整路徑就是共享路徑後面接檔名，例如：
 
 ```
-\\NAS\ClaudeUsage\names.json          ← 對照表（同時是白名單）
-\\NAS\ClaudeUsage\192.168.1.10_alice.json   ← 各台自動產生，不用管
-\\NAS\ClaudeUsage\192.168.1.20_ming.json
+T:\claude_usage\names.json          ← 對照表（同時是白名單）
+T:\claude_usage\192.168.1.10.json         ← 各台自動產生，不用管
+T:\claude_usage\192.168.1.20.json
 ```
 
 檔名與位置都是固定的，程式只認這一個。內容長這樣：
@@ -212,8 +213,8 @@ UTF-8 或 ANSI 存檔都可以，程式會自動判斷，中文名稱不會變�
 
 | 模式 | 一列代表 | 副標顯示 | 適合 |
 | --- | --- | --- | --- |
-| **依固定 IP**（預設） | 一個 IP | IP、電腦名、token 數 | 用 IP 管理的環境 |
-| **依名稱** | 一個名稱（多台自動加總） | 用了哪幾台 | 想用人／部門／用途分組時 |
+| **依固定 IP**（預設） | 一個 IP | IP 與 token 數 | 用 IP 管理的環境 |
+| **依名稱** | 一個名稱（多個 IP 自動加總） | 有哪幾個 IP | 想用人／部門／用途分組時 |
 
 ### 電腦數量怎麼控制
 
@@ -273,7 +274,7 @@ UTF-8 或 ANSI 存檔都可以，程式會自動判斷，中文名稱不會變�
 部署到新環境時改 `ClaudeUsageWidget.ps1` 開頭這一行就好：
 
 ```powershell
-$script:SharedFolder = '\\NAS\ClaudeUsage'
+$script:SharedFolder = 'T:\claude_usage'
 ```
 
 **連不上的時候不會出錯。** 筆電帶出公司、NAS 沒開機、路徑打錯，
@@ -341,7 +342,7 @@ $script:SharedFolder = '\\NAS\ClaudeUsage'
 所以每台切出來的區間界線完全一致，加總才有意義。
 
 共享資料夾裡每個「IP + Windows 使用者」組合會產生一個 JSON（約 280 bytes），
-**內容只有彙總後的數字**——IP、電腦名、Windows 使用者名、金額當量、token 數、更新時間，
+**內容只有 IP 與彙總後的數字**——IP、金額當量、token 數、更新時間，
 不含任何對話內容、檔案路徑或提示詞。
 
 ### 用量怎麼換算
