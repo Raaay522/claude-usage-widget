@@ -1,0 +1,16 @@
+{
+  "Theme": "auto",
+  "Topmost": true,
+  "BackgroundAlpha": 250,
+  "Left": -1,
+  "Top": 48,
+  "RefreshMinutes": 5,
+  "CloseToTray": true,
+  "StartHidden": false,
+  "SharedFolder": "",
+  "DisplayName": "",
+  "FixedIP": "",
+  "ViewMode": "ip",
+  "MaxRows": 0,
+  "HideAfterDays": 0
+}
