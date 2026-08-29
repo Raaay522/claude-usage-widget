@@ -633,6 +633,8 @@ function New-MachineRow {
         $cap.FontSize = 10
         $cap.Foreground = $theme.Faint
         $cap.Margin = '0,4,0,0'
+        # 合併多個 IP 時這行會很長，讓它換行而不是被切掉
+        $cap.TextWrapping = 'Wrap'
         $block.Children.Add($cap) | Out-Null
     }
 
