@@ -65,7 +65,6 @@ $script:Config = @{
     BackgroundAlpha = 250
     SharedFolder    = ''
     DisplayName     = ''    # 留空就用 Windows 使用者名稱
-    FixedIP         = ''    # 留空就自動偵測；填了就固定用這個值當識別
     ViewMode        = 'ip'  # ip = 依固定 IP；person = 依人；machine = 依電腦
     MaxRows         = 0     # 最多列出幾台，0 = 全部；超過的合併成一列「其他 N 台」
     HideAfterDays   = 0     # 超過幾天沒回報就不列出來，0 = 一律列出
@@ -85,17 +84,13 @@ function Get-DisplayName {
 <#
     取得這台電腦對外的 IPv4 位址。
 
-    優先順序：設定裡手動指定的 > 自動偵測。
-    自動偵測排除 loopback 與 169.254.*（那是網路沒接通時系統自己給的暫時位址），
-    多張網卡時挑路由優先度最高（InterfaceMetric 最小）的那張。
+    一律自動偵測，不接受手動指定 —— 手動填的值可能跟實際網路狀態對不上，
+    白名單比對就會失準。排除 loopback 與 169.254.*（那是網路沒接通時
+    系統自己給的暫時位址），多張網卡時挑路由優先度最高（InterfaceMetric 最小）的那張。
 
     這裡刻意不用 Get-NetIPConfiguration —— 它要 1.6 秒，Get-NetIPAddress 只要 20 毫秒。
 #>
 function Get-LocalIPv4 {
-    if (-not [string]::IsNullOrWhiteSpace($script:Config.FixedIP)) {
-        return ([string]$script:Config.FixedIP).Trim()
-    }
-
     try {
         $candidates = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
             Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' })
@@ -698,6 +693,17 @@ function Update-MachineBreakdown {
     }
 
     $script:LocalIP = Get-LocalIPv4
+    $nameMap = Read-NameMap -SharedFolder $folder
+
+    # 白名單：IP 沒登記在 names.json 裡就不上傳，避免未經同意的機器混進統計。
+    # 仍然讀取並顯示其他人的數字，只是自己這台不寫進去。
+    $script:IsRegistered = ($script:LocalIP -and $nameMap.ContainsKey($script:LocalIP))
+    if (-not $script:IsRegistered) {
+        $errorText.Text = ('本機 {0} 未登記於名稱對照表，用量不會上傳。' -f
+            $(if ($script:LocalIP) { $script:LocalIP } else { '（取不到 IP）' }))
+        $errorText.Visibility = 'Visible'
+        Write-Log "本機 IP $($script:LocalIP) 不在白名單，略過上傳"
+    }
 
     $report = @{
         machine       = $script:Machine
@@ -711,11 +717,13 @@ function Update-MachineBreakdown {
         weeklyTokens  = $script:LocalWeeklyTokens
     }
 
-    if (-not (Write-MachineReport -SharedFolder $folder -Report $report)) {
-        $machinesSection.Visibility = 'Visible'
-        $machinesTitle.Text = '共享資料夾無法寫入，請確認路徑與權限'
-        $machines.Children.Clear()
-        return
+    if ($script:IsRegistered) {
+        if (-not (Write-MachineReport -SharedFolder $folder -Report $report)) {
+            $machinesSection.Visibility = 'Visible'
+            $machinesTitle.Text = '共享資料夾無法寫入，請確認路徑與權限'
+            $machines.Children.Clear()
+            return
+        }
     }
 
     $reports = @(Read-AllMachineReports -SharedFolder $folder -MaxAgeDays ([int]$script:Config.HideAfterDays))
@@ -727,7 +735,6 @@ function Update-MachineBreakdown {
     $mode = [string]$script:Config.ViewMode
     if ([string]::IsNullOrWhiteSpace($mode)) { $mode = 'ip' }
 
-    $nameMap = Read-NameMap -SharedFolder $folder
     $rows = @(Group-Reports -Reports $reports -By $mode -NameMap $nameMap)
 
     switch ($mode) {
@@ -1193,11 +1200,21 @@ $miName.Add_Click({
     $script:Config.DisplayName = $entered.Trim()
     Export-Config
 
-    # 同時寫進共享的對照表，其他電腦不必各自設定就能看到這個名字
+    # 只有已經登記在對照表裡的機器可以改自己的名字。
+    # 若允許未登記的機器自己寫入，白名單就形同虛設了。
     $folder = [string]$script:Config.SharedFolder
     if (-not [string]::IsNullOrWhiteSpace($folder) -and -not [string]::IsNullOrWhiteSpace($ip)) {
-        if (Set-NameMapEntry -SharedFolder $folder -Key $ip -Name $script:Config.DisplayName) {
-            Write-Log "已寫入共享名稱對照表：$ip -> $($script:Config.DisplayName)"
+        $existing = Read-NameMap -SharedFolder $folder
+        if ($existing.ContainsKey($ip)) {
+            if (Set-NameMapEntry -SharedFolder $folder -Key $ip -Name $script:Config.DisplayName) {
+                Write-Log "已更新共享名稱對照表：$ip -> $($script:Config.DisplayName)"
+            }
+        } else {
+            [Windows.MessageBox]::Show(
+                ("這台的 IP（{0}）還沒登記在名稱對照表裡，所以不會上傳用量。`n`n" +
+                 "請管理者用右鍵選單的「開啟 IP 名稱對照表」把這個 IP 加進去。") -f $ip,
+                '尚未登記', 'OK', 'Information') | Out-Null
+            Write-Log "IP $ip 未登記，未寫入名稱對照表"
         }
     }
 
@@ -1205,21 +1222,6 @@ $miName.Add_Click({
     Update-Widget
 })
 $menu.Items.Add($miName) | Out-Null
-
-$miFixIP = New-Object Windows.Controls.MenuItem
-$miFixIP.Header = '設定固定 IP…'
-$miFixIP.Add_Click({
-    Add-Type -AssemblyName Microsoft.VisualBasic
-    $detected = Get-LocalIPv4
-    $entered = [Microsoft.VisualBasic.Interaction]::InputBox(
-        "手動指定這台電腦的識別 IP。`n留空則每次自動偵測（目前偵測到：$detected）。",
-        '設定固定 IP', [string]$script:Config.FixedIP)
-    $script:Config.FixedIP = $entered.Trim()
-    Export-Config
-    Write-Log "固定 IP 設定為：$(if ($script:Config.FixedIP) { $script:Config.FixedIP } else { '自動偵測' })"
-    Update-Widget
-})
-$menu.Items.Add($miFixIP) | Out-Null
 
 $miNameMap = New-Object Windows.Controls.MenuItem
 $miNameMap.Header = '開啟 IP 名稱對照表'
