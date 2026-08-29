@@ -1268,24 +1268,6 @@ foreach ($label in $viewOptions.Keys) {
 }
 $menu.Items.Add($miView) | Out-Null
 
-$miPurge = New-Object Windows.Controls.MenuItem
-$miPurge.Header = '永久移除 7 天未回報的機器…'
-$miPurge.Add_Click({
-    $folder = $script:SharedFolder
-    if ([string]::IsNullOrWhiteSpace($folder) -or -not (Test-Path $folder)) { return }
-
-    $answer = [Windows.MessageBox]::Show(
-        "這會從共享資料夾刪除超過 7 天沒有回報的機器紀錄。`n`n注意：如果那台電腦的小工具還在執行，它下次更新時會再把自己寫回來。",
-        '永久移除機器紀錄', 'OKCancel', 'Warning')
-    if ($answer -ne 'OK') { return }
-
-    $removed = Remove-StaleReports -SharedFolder $folder -OlderThanDays 7
-    Write-Log "已移除 $removed 筆過期的機器紀錄"
-    [Windows.MessageBox]::Show("已移除 $removed 筆紀錄。", '完成', 'OK', 'Information') | Out-Null
-    Update-Widget
-})
-$menu.Items.Add($miPurge) | Out-Null
-
 $menu.Items.Add((New-Object Windows.Controls.Separator)) | Out-Null
 
 $miFolder = New-Object Windows.Controls.MenuItem

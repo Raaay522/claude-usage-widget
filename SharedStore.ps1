@@ -139,42 +139,6 @@ function Read-AllMachineReports {
 }
 
 <#
-    刪掉共享資料夾裡長期沒更新的回報檔，用來把已經不再使用的電腦移出名單。
-
-    注意：如果那台電腦的小工具還在跑，它下次更新時又會把自己寫回來。
-    要真正移除，得先在那台上關掉小工具（或停用共享）再刪。
-#>
-function Remove-StaleReports {
-    param(
-        [string]$SharedFolder,
-        [int]$OlderThanDays = 7
-    )
-
-    $removed = 0
-    if ([string]::IsNullOrWhiteSpace($SharedFolder)) { return $removed }
-    if (-not (Test-Path $SharedFolder)) { return $removed }
-
-    $cutoff = [datetimeoffset]::Now.AddDays(-$OlderThanDays)
-
-    foreach ($file in (Get-ChildItem -Path $SharedFolder -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
-        if ($file.Name -eq $script:NameMapFile) { continue }
-        try {
-            $obj = Get-Content $file.FullName -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json
-            if (-not $obj.machine) { continue }
-            if (-not $obj.updatedAt) { continue }
-
-            $updated = [datetimeoffset]::Parse($obj.updatedAt)
-            if ($updated -lt $cutoff) {
-                Remove-Item $file.FullName -Force -ErrorAction Stop
-                $removed++
-            }
-        } catch { continue }
-    }
-
-    return $removed
-}
-
-<#
     把各機器的回報合併成畫面上的一列一列。
 
     $By 決定合併的依據：
