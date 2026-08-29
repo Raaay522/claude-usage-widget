@@ -63,7 +63,6 @@ $script:Config = @{
     RefreshMinutes  = 5
     Topmost         = $true
     BackgroundAlpha = 250
-    SharedFolder    = ''
     ViewMode        = 'ip'  # ip = 依固定 IP；name = 依名稱
     Theme           = 'auto' # auto = 跟隨 Windows 設定；light／dark 手動指定
     CloseToTray     = $true # 按 ✕ 時隱藏到狀態列，而不是真的結束
@@ -75,6 +74,11 @@ $script:Config = @{
 # 太久沒回報的機器留著也只是干擾判讀。
 $script:MaxRows       = 5    # 最多列出幾台，超過的併成一列「其他 N 台」
 $script:HideAfterDays = 30   # 超過這麼多天沒回報就不列出來
+
+# ── 共享資料夾（寫死）────────────────────────────────────────
+# 部署到新環境時只要改這一行。連不上時小工具會自動只顯示本機用量，
+# 不會出錯也不會卡住，所以筆電帶出公司照樣能用。
+$script:SharedFolder = '\\NAS\ClaudeUsage'
 
 <#
     取得這台電腦對外的 IPv4 位址。
@@ -649,6 +653,90 @@ $script:LocalWeeklyTokens = 0.0
     這是估算，不是官方數字 —— Anthropic 沒有公開額度百分比的實際計算權重，
     這裡用公開定價當代理指標。相對大小可信，絕對值僅供參考。
 #>
+<#
+    檢查共享資料夾現在能不能用。
+
+    直接對連不上的 UNC 路徑呼叫 Test-Path 會等到 SMB 自己逾時 —— 實測卡了 8 秒，
+    這段時間整個視窗是凍住的。所以先用 1.2 秒逾時的 TCP 探測確認主機可達，
+    不可達就直接判定為離線，不去碰檔案系統。
+#>
+function Test-SharedFolderAvailable {
+    $folder = $script:SharedFolder
+    if ([string]::IsNullOrWhiteSpace($folder)) { return $false }
+
+    if ($folder -match '^\\\\([^\\]+)') {
+        $server = $matches[1]
+        $client = $null
+        try {
+            $client = New-Object System.Net.Sockets.TcpClient
+            $async = $client.BeginConnect($server, 445, $null, $null)
+            if (-not $async.AsyncWaitHandle.WaitOne(1200)) { return $false }
+            $client.EndConnect($async)
+        }
+        catch { return $false }
+        finally { if ($client) { $client.Close() } }
+    }
+
+    try { return [bool](Test-Path -LiteralPath $folder -ErrorAction SilentlyContinue) }
+    catch { return $false }
+}
+
+<#
+    連不上共享資料夾時，改為呈現本機自己的用量。
+
+    這不是錯誤狀態 —— 筆電帶出公司、NAS 沒開機都會走到這裡，
+    所以用中性的說法呈現，不用紅字嚇人。
+#>
+function Show-LocalOnlySummary {
+    param([double]$SessionTokens)
+
+    $theme = Get-Theme
+    $machines.Children.Clear()
+    $machinesTitle.Text = '本機用量'
+
+    foreach ($row in @(
+        @{ Label = '本 5 小時'; Value = (Format-Tokens $SessionTokens) },
+        @{ Label = '本週';      Value = (Format-Tokens $script:LocalWeeklyTokens) }
+    )) {
+        $grid = New-Object Windows.Controls.Grid
+        $c1 = New-Object Windows.Controls.ColumnDefinition
+        $c2 = New-Object Windows.Controls.ColumnDefinition
+        $c2.Width = 'Auto'
+        $grid.ColumnDefinitions.Add($c1)
+        $grid.ColumnDefinitions.Add($c2)
+        $grid.Margin = '0,0,0,6'
+
+        $label = New-Object Windows.Controls.TextBlock
+        $label.Text = $row.Label
+        $label.FontFamily = 'Microsoft JhengHei UI'
+        $label.FontSize = 11
+        $label.Foreground = $theme.Text
+        [Windows.Controls.Grid]::SetColumn($label, 0)
+
+        $value = New-Object Windows.Controls.TextBlock
+        $value.Text = $row.Value + ' tokens'
+        $value.FontFamily = 'Consolas'
+        $value.FontSize = 11.5
+        $value.Foreground = $theme.Text
+        [Windows.Controls.Grid]::SetColumn($value, 1)
+
+        $grid.Children.Add($label) | Out-Null
+        $grid.Children.Add($value) | Out-Null
+        $machines.Children.Add($grid) | Out-Null
+    }
+
+    $note = New-Object Windows.Controls.TextBlock
+    $note.Text = '未連上共享資料夾，只顯示這台的數字'
+    $note.FontFamily = 'Microsoft JhengHei UI'
+    $note.FontSize = 10
+    $note.Foreground = $theme.Faint
+    $note.TextWrapping = 'Wrap'
+    $note.Margin = '0,2,0,0'
+    $machines.Children.Add($note) | Out-Null
+
+    $machinesSection.Visibility = 'Visible'
+}
+
 function Update-MachineBreakdown {
     param(
         $SessionPercent,
@@ -656,7 +744,7 @@ function Update-MachineBreakdown {
         [string]$WeeklyReset
     )
 
-    $folder = [string]$script:Config.SharedFolder
+    $folder = $script:SharedFolder
 
     # 時間視窗一律從 API 給的重置時間往回推，
     # 這樣每台電腦切出來的區間界線完全一致，加總才有意義。
@@ -682,8 +770,10 @@ function Update-MachineBreakdown {
     Write-Log ('本機統計耗時 {0} ms；本區間 ${1:N4} 當量、{2:N0} tokens' -f `
         $sw.ElapsedMilliseconds, $localSession.Cost, $sessionTokens)
 
-    if ([string]::IsNullOrWhiteSpace($folder)) {
-        $machinesSection.Visibility = 'Collapsed'
+    # 共享資料夾沒設、不存在、或現在連不上（不在區網、NAS 沒開機）時，
+    # 就只呈現本機自己的用量，不當成錯誤。
+    if (-not (Test-SharedFolderAvailable)) {
+        Show-LocalOnlySummary -SessionTokens $sessionTokens
         return
     }
 
@@ -1154,25 +1244,6 @@ $menu.Items.Add($miAlpha) | Out-Null
 
 $menu.Items.Add((New-Object Windows.Controls.Separator)) | Out-Null
 
-$miShared = New-Object Windows.Controls.MenuItem
-$miShared.Header = '設定共享資料夾…'
-$miShared.Add_Click({
-    Add-Type -AssemblyName System.Windows.Forms
-    $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-    $dialog.Description = '選擇各台電腦共用的資料夾（例如 \\NAS\ClaudeUsage）'
-    $dialog.ShowNewFolderButton = $true
-    if ($script:Config.SharedFolder -and (Test-Path $script:Config.SharedFolder)) {
-        $dialog.SelectedPath = $script:Config.SharedFolder
-    }
-    if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-        $script:Config.SharedFolder = $dialog.SelectedPath
-        Export-Config
-        Write-Log "共享資料夾設定為：$($dialog.SelectedPath)"
-        Update-Widget
-    }
-})
-$menu.Items.Add($miShared) | Out-Null
-
 $miView = New-Object Windows.Controls.MenuItem
 $miView.Header = '檢視方式'
 $viewOptions = [ordered]@{
@@ -1200,7 +1271,7 @@ $menu.Items.Add($miView) | Out-Null
 $miPurge = New-Object Windows.Controls.MenuItem
 $miPurge.Header = '永久移除 7 天未回報的機器…'
 $miPurge.Add_Click({
-    $folder = [string]$script:Config.SharedFolder
+    $folder = $script:SharedFolder
     if ([string]::IsNullOrWhiteSpace($folder) -or -not (Test-Path $folder)) { return }
 
     $answer = [Windows.MessageBox]::Show(
@@ -1214,15 +1285,6 @@ $miPurge.Add_Click({
     Update-Widget
 })
 $menu.Items.Add($miPurge) | Out-Null
-
-$miClearShared = New-Object Windows.Controls.MenuItem
-$miClearShared.Header = '停用共享（只看本機）'
-$miClearShared.Add_Click({
-    $script:Config.SharedFolder = ''
-    Export-Config
-    Update-Widget
-})
-$menu.Items.Add($miClearShared) | Out-Null
 
 $menu.Items.Add((New-Object Windows.Controls.Separator)) | Out-Null
 
