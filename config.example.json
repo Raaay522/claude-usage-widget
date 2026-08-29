@@ -8,7 +8,5 @@
   "CloseToTray": true,
   "StartHidden": false,
   "SharedFolder": "",
-  "ViewMode": "ip",
-  "MaxRows": 0,
-  "HideAfterDays": 0
+  "ViewMode": "ip"
 }

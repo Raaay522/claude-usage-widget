@@ -64,14 +64,17 @@ $script:Config = @{
     Topmost         = $true
     BackgroundAlpha = 250
     SharedFolder    = ''
-    ViewMode        = 'ip'  # ip = 依固定 IP；name = 依名稱；machine = 依電腦
-    MaxRows         = 0     # 最多列出幾台，0 = 全部；超過的合併成一列「其他 N 台」
-    HideAfterDays   = 0     # 超過幾天沒回報就不列出來，0 = 一律列出
+    ViewMode        = 'ip'  # ip = 依固定 IP；name = 依名稱
     Theme           = 'auto' # auto = 跟隨 Windows 設定；light／dark 手動指定
     CloseToTray     = $true # 按 ✕ 時隱藏到狀態列，而不是真的結束
     StartHidden     = $false# 啟動時直接縮在狀態列，不跳出視窗
     TrayTipShown    = $false# 是否已經提示過「縮到狀態列了」
 }
+
+# 這兩個刻意固定、不做成選項：畫面高度有限，列太多會超出螢幕；
+# 太久沒回報的機器留著也只是干擾判讀。
+$script:MaxRows       = 5    # 最多列出幾台，超過的併成一列「其他 N 台」
+$script:HideAfterDays = 30   # 超過這麼多天沒回報就不列出來
 
 <#
     取得這台電腦對外的 IPv4 位址。
@@ -717,21 +720,21 @@ function Update-MachineBreakdown {
         }
     }
 
-    $reports = @(Read-AllMachineReports -SharedFolder $folder -MaxAgeDays ([int]$script:Config.HideAfterDays))
+    $reports = @(Read-AllMachineReports -SharedFolder $folder -MaxAgeDays $script:HideAfterDays)
     if ($reports.Count -eq 0) {
         $machinesSection.Visibility = 'Collapsed'
         return
     }
 
     $mode = [string]$script:Config.ViewMode
-    if ($mode -eq 'person') { $mode = 'name' }   # 舊版設定值，沿用
+    if ($mode -eq 'person')  { $mode = 'name' }   # 舊版設定值，沿用
+    if ($mode -eq 'machine') { $mode = 'ip' }     # 已移除的檢視，退回依 IP
     if ([string]::IsNullOrWhiteSpace($mode)) { $mode = 'ip' }
 
     $rows = @(Group-Reports -Reports $reports -By $mode -NameMap $nameMap)
 
     switch ($mode) {
         'name'    { $machinesTitle.Text = '本 5 小時各名稱佔用（估算）' }
-        'machine' { $machinesTitle.Text = '本 5 小時各台佔用（估算）' }
         default   { $machinesTitle.Text = '本 5 小時各 IP 佔用（估算）' }
     }
 
@@ -744,7 +747,7 @@ function Update-MachineBreakdown {
 
     # 台數多的時候視窗會被撐得很高，超過上限的併成一列，
     # 但本機那一列一定保留，否則自己反而看不到自己。
-    $maxRows = [int]$script:Config.MaxRows
+    $maxRows = $script:MaxRows
     $overflow = @()
     if ($maxRows -gt 0 -and $sorted.Count -gt $maxRows) {
         $kept = @()
@@ -1175,7 +1178,6 @@ $miView.Header = '檢視方式'
 $viewOptions = [ordered]@{
     '依固定 IP' = 'ip'
     '依名稱'    = 'name'
-    '依電腦'    = 'machine'
 }
 foreach ($label in $viewOptions.Keys) {
     $item = New-Object Windows.Controls.MenuItem
@@ -1194,58 +1196,6 @@ foreach ($label in $viewOptions.Keys) {
     $miView.Items.Add($item) | Out-Null
 }
 $menu.Items.Add($miView) | Out-Null
-
-$miRows = New-Object Windows.Controls.MenuItem
-$miRows.Header = '最多顯示幾台'
-$rowOptions = [ordered]@{
-    '全部'   = 0
-    '前 3 台' = 3
-    '前 5 台' = 5
-    '前 10 台' = 10
-}
-foreach ($label in $rowOptions.Keys) {
-    $item = New-Object Windows.Controls.MenuItem
-    $item.Header = $label
-    $item.Tag = $rowOptions[$label]
-    $item.IsCheckable = $true
-    $item.IsChecked = ([int]$script:Config.MaxRows -eq $rowOptions[$label])
-    $item.Add_Click({
-        param($sender, $e)
-        $n = [int]$sender.Tag
-        $script:Config.MaxRows = $n
-        foreach ($sibling in $miRows.Items) { $sibling.IsChecked = ([int]$sibling.Tag -eq $n) }
-        Export-Config
-        Update-Widget
-    })
-    $miRows.Items.Add($item) | Out-Null
-}
-$menu.Items.Add($miRows) | Out-Null
-
-$miHide = New-Object Windows.Controls.MenuItem
-$miHide.Header = '隱藏久未回報的機器'
-$hideOptions = [ordered]@{
-    '不隱藏'      = 0
-    '超過 1 天'   = 1
-    '超過 7 天'   = 7
-    '超過 30 天'  = 30
-}
-foreach ($label in $hideOptions.Keys) {
-    $item = New-Object Windows.Controls.MenuItem
-    $item.Header = $label
-    $item.Tag = $hideOptions[$label]
-    $item.IsCheckable = $true
-    $item.IsChecked = ([int]$script:Config.HideAfterDays -eq $hideOptions[$label])
-    $item.Add_Click({
-        param($sender, $e)
-        $n = [int]$sender.Tag
-        $script:Config.HideAfterDays = $n
-        foreach ($sibling in $miHide.Items) { $sibling.IsChecked = ([int]$sibling.Tag -eq $n) }
-        Export-Config
-        Update-Widget
-    })
-    $miHide.Items.Add($item) | Out-Null
-}
-$menu.Items.Add($miHide) | Out-Null
 
 $miPurge = New-Object Windows.Controls.MenuItem
 $miPurge.Header = '永久移除 7 天未回報的機器…'

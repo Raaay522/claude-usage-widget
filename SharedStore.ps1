@@ -180,7 +180,6 @@ function Remove-StaleReports {
     $By 決定合併的依據：
         ip      —— 依固定 IP（預設）。同一個 IP 上不同 Windows 使用者的用量會加在一起
         name    —— 依 names.json 裡的名稱。多個 IP 對到同一個名稱時會合併加總
-        machine —— 依電腦，不合併
 
     只要那一組還有任何一台在線上，整組就不算離線。
 #>
@@ -203,10 +202,6 @@ function Group-Reports {
                 # 管理者把多個 IP 對到同一個名稱，這裡就會自動合併
                 $key = $resolved
                 if ([string]::IsNullOrWhiteSpace($key)) { $key = $r.IP }
-            }
-            'machine' {
-                $key = $r.Machine
-                if ($r.User) { $key = '{0}|{1}' -f $r.Machine, $r.User }
             }
             default {
                 $key = $r.IP
@@ -257,10 +252,6 @@ function Group-Reports {
                 $g.Title  = $key
                 $g.Detail = ($g.Machines -join '、')
                 if ($g.Machines.Count -gt 1) { $g.Detail = '{0} 台：{1}' -f $g.Machines.Count, ($g.Machines -join '、') }
-            }
-            'machine' {
-                $g.Title  = @($g.Machines)[0]
-                $g.Detail = ($g.People -join '、')
             }
             default {
                 # 對照表裡有名字就顯示名字，IP 退到副標；沒有的話主標直接顯示 IP
