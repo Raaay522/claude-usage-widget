@@ -7,5 +7,6 @@
   "RefreshMinutes": 5,
   "CloseToTray": true,
   "StartHidden": false,
-  "ViewMode": "ip"
+  "ViewMode": "ip",
+  "StatWindow": "session"
 }

@@ -62,6 +62,7 @@ $script:Config = @{
     Topmost         = $true
     BackgroundAlpha = 250
     ViewMode        = 'ip'  # ip = 依固定 IP；name = 依名稱
+    StatWindow      = 'session' # session = 本 5 小時；weekly = 本週；both = 兩個都顯示
     Theme           = 'auto' # auto = 跟隨 Windows 設定；light／dark 手動指定
     CloseToTray     = $true # 按 ✕ 時隱藏到狀態列，而不是真的結束
     StartHidden     = $false# 啟動時直接縮在狀態列，不跳出視窗
@@ -750,9 +751,94 @@ function Show-LocalOnlySummary {
     $machinesSection.Visibility = 'Visible'
 }
 
+<#
+    把分組結果畫成一列一列。
+
+    $Period 決定看哪個區間的數字（Session＝本 5 小時、Weekly＝本週），
+    兩個區間共用同一套排版，只是取的欄位與帳號百分比不同。
+#>
+function Add-BreakdownRows {
+    param(
+        $Rows,
+        $AccountPercent,
+        [ValidateSet('Session', 'Weekly')]
+        [string]$Period
+    )
+
+    $costField   = $Period + 'Cost'
+    $tokensField = $Period + 'Tokens'
+
+    $totalCost = 0.0
+    foreach ($r in @($Rows)) { $totalCost += [double]$r.$costField }
+
+    $sorted = @($Rows | Sort-Object -Property $costField -Descending)
+
+    # 台數多的時候視窗會被撐得很高，超過上限的併成一列，
+    # 但本機那一列一定保留，否則自己反而看不到自己。
+    $maxRows = $script:MaxRows
+    $overflow = @()
+    if ($maxRows -gt 0 -and $sorted.Count -gt $maxRows) {
+        $kept = @()
+        $rest = @()
+        foreach ($r in $sorted) {
+            # 一律用 IP 認自己：名字由 names.json 決定，不同機器可能同名
+            $isSelfRow = ($r.IPs -contains $script:LocalIP)
+            if ($kept.Count -lt $maxRows -or $isSelfRow) { $kept += $r } else { $rest += $r }
+        }
+        $sorted = $kept
+        $overflow = $rest
+    }
+
+    foreach ($r in $sorted) {
+        $ratio = 0.0
+        if ($totalCost -gt 0) { $ratio = [double]$r.$costField / $totalCost }
+
+        $pct = 0.0
+        if ($null -ne $AccountPercent) { $pct = [double]$AccountPercent * $ratio }
+
+        $isSelf = ($r.IPs -contains $script:LocalIP)
+
+        $where = $r.Detail
+        if ($r.IsStale) {
+            $age = $r.MinAgeMinutes
+            if ($null -eq $age -or [double]::IsInfinity([double]$age)) {
+                $caption = '{0} · 未回報' -f $where
+            } else {
+                $caption = '{0} · 已 {1:N0} 分鐘未回報' -f $where, $age
+            }
+        } else {
+            $caption = '{0} · {1} tokens' -f $where, (Format-Tokens ([double]$r.$tokensField))
+        }
+        $caption = $caption.TrimStart(' ', [char]0x00B7)
+
+        $row = New-MachineRow -Name $r.Title -Percent $pct -ShareRatio $ratio `
+            -IsSelf $isSelf -IsStale $r.IsStale -Caption $caption
+        $machines.Children.Add($row) | Out-Null
+    }
+
+    if ($overflow.Count -gt 0) {
+        $restCost = 0.0
+        $restTokens = 0.0
+        foreach ($r in $overflow) {
+            $restCost   += [double]$r.$costField
+            $restTokens += [double]$r.$tokensField
+        }
+
+        $ratio = 0.0
+        if ($totalCost -gt 0) { $ratio = $restCost / $totalCost }
+        $pct = 0.0
+        if ($null -ne $AccountPercent) { $pct = [double]$AccountPercent * $ratio }
+
+        $row = New-MachineRow -Name ('其他 {0} 台' -f $overflow.Count) -Percent $pct -ShareRatio $ratio `
+            -IsSelf $false -IsStale $true -Caption ('合計 {0} tokens' -f (Format-Tokens $restTokens))
+        $machines.Children.Add($row) | Out-Null
+    }
+}
+
 function Update-MachineBreakdown {
     param(
         $SessionPercent,
+        $WeeklyPercent,
         [string]$SessionReset,
         [string]$WeeklyReset
     )
@@ -834,77 +920,36 @@ function Update-MachineBreakdown {
 
     $rows = @(Group-Reports -Reports $reports -By $mode -NameMap $nameMap)
 
-    switch ($mode) {
-        'name'    { $machinesTitle.Text = '本 5 小時各名稱佔用（估算）' }
-        default   { $machinesTitle.Text = '本 5 小時各 IP 佔用（估算）' }
-    }
-
-    $totalCost = 0.0
-    foreach ($r in $rows) { $totalCost += $r.SessionCost }
+    $unit = $(if ($mode -eq 'name') { '各名稱' } else { '各 IP' })
 
     $machines.Children.Clear()
 
-    $sorted = @($rows | Sort-Object -Property SessionCost -Descending)
+    # 統計區間：本 5 小時、本週，或兩個都畫
+    $window = [string]$script:Config.StatWindow
+    if ([string]::IsNullOrWhiteSpace($window)) { $window = 'session' }
 
-    # 台數多的時候視窗會被撐得很高，超過上限的併成一列，
-    # 但本機那一列一定保留，否則自己反而看不到自己。
-    $maxRows = $script:MaxRows
-    $overflow = @()
-    if ($maxRows -gt 0 -and $sorted.Count -gt $maxRows) {
-        $kept = @()
-        $rest = @()
-        foreach ($r in $sorted) {
-            # 一律用 IP 認自己：名字由 names.json 決定，不同機器可能同名
-            $isSelfRow = ($r.IPs -contains $script:LocalIP)
-            if ($kept.Count -lt $maxRows -or $isSelfRow) { $kept += $r } else { $rest += $r }
-        }
-        $sorted = $kept
-        $overflow = $rest
+    $showSession = ($window -ne 'weekly')
+    $showWeekly  = ($window -ne 'session')
+
+    if ($showSession) {
+        $machinesTitle.Text = '本 5 小時{0}佔用（估算）' -f $unit
+        Add-BreakdownRows -Rows $rows -AccountPercent $SessionPercent -Period 'Session'
     }
 
-    foreach ($r in $sorted) {
-        $ratio = 0.0
-        if ($totalCost -gt 0) { $ratio = $r.SessionCost / $totalCost }
-
-        $pct = 0.0
-        if ($null -ne $SessionPercent) { $pct = [double]$SessionPercent * $ratio }
-
-        $isSelf = ($r.IPs -contains $script:LocalIP)
-
-        $where = $r.Detail
-        if ($r.IsStale) {
-            $age = $r.MinAgeMinutes
-            if ($null -eq $age -or [double]::IsInfinity([double]$age)) {
-                $caption = '{0} · 未回報' -f $where
-            } else {
-                $caption = '{0} · 已 {1:N0} 分鐘未回報' -f $where, $age
-            }
+    if ($showWeekly) {
+        if ($showSession) {
+            # 兩個區間都要畫時，第二段自己帶一個小標題
+            $header = New-Object Windows.Controls.TextBlock
+            $header.Text = '本週{0}佔用（估算）' -f $unit
+            $header.FontFamily = 'Microsoft JhengHei UI'
+            $header.FontSize = 10.5
+            $header.Foreground = (Get-Theme).Muted
+            $header.Margin = '0,6,0,9'
+            $machines.Children.Add($header) | Out-Null
         } else {
-            $caption = '{0} · {1} tokens' -f $where, (Format-Tokens $r.SessionTokens)
+            $machinesTitle.Text = '本週{0}佔用（估算）' -f $unit
         }
-        $caption = $caption.TrimStart(' ', [char]0x00B7)
-
-        $row = New-MachineRow -Name $r.Title -Percent $pct -ShareRatio $ratio `
-            -IsSelf $isSelf -IsStale $r.IsStale -Caption $caption
-        $machines.Children.Add($row) | Out-Null
-    }
-
-    if ($overflow.Count -gt 0) {
-        $restCost = 0.0
-        $restTokens = 0.0
-        foreach ($r in $overflow) {
-            $restCost   += $r.SessionCost
-            $restTokens += $r.SessionTokens
-        }
-
-        $ratio = 0.0
-        if ($totalCost -gt 0) { $ratio = $restCost / $totalCost }
-        $pct = 0.0
-        if ($null -ne $SessionPercent) { $pct = [double]$SessionPercent * $ratio }
-
-        $row = New-MachineRow -Name ('其他 {0} 台' -f $overflow.Count) -Percent $pct -ShareRatio $ratio `
-            -IsSelf $false -IsStale $true -Caption ('合計 {0} tokens' -f (Format-Tokens $restTokens))
-        $machines.Children.Add($row) | Out-Null
+        Add-BreakdownRows -Rows $rows -AccountPercent $WeeklyPercent -Period 'Weekly'
     }
 
     $machinesSection.Visibility = 'Visible'
@@ -1049,7 +1094,7 @@ function Update-Widget {
             $bars.Children.Add($bar) | Out-Null
         }
 
-        Update-MachineBreakdown -SessionPercent $sessionPercent -SessionReset $sessionReset -WeeklyReset $weeklyReset
+        Update-MachineBreakdown -SessionPercent $sessionPercent -WeeklyPercent $weeklyPercent -SessionReset $sessionReset -WeeklyReset $weeklyReset
 
         $suffix = ''
         if ($script:LocalWeeklyTokens -gt 0) {
@@ -1278,6 +1323,31 @@ foreach ($label in $viewOptions.Keys) {
     $miView.Items.Add($item) | Out-Null
 }
 $menu.Items.Add($miView) | Out-Null
+
+$miWindow = New-Object Windows.Controls.MenuItem
+$miWindow.Header = '統計區間'
+$windowOptions = [ordered]@{
+    '本 5 小時' = 'session'
+    '本週'      = 'weekly'
+    '兩者都顯示' = 'both'
+}
+foreach ($label in $windowOptions.Keys) {
+    $item = New-Object Windows.Controls.MenuItem
+    $item.Header = $label
+    $item.Tag = $windowOptions[$label]
+    $item.IsCheckable = $true
+    $item.IsChecked = ([string]$script:Config.StatWindow -eq $windowOptions[$label])
+    $item.Add_Click({
+        param($sender, $e)
+        $w = [string]$sender.Tag
+        $script:Config.StatWindow = $w
+        foreach ($sibling in $miWindow.Items) { $sibling.IsChecked = ([string]$sibling.Tag -eq $w) }
+        Export-Config
+        Update-Widget
+    })
+    $miWindow.Items.Add($item) | Out-Null
+}
+$menu.Items.Add($miWindow) | Out-Null
 
 $menu.Items.Add((New-Object Windows.Controls.Separator)) | Out-Null
 
