@@ -61,7 +61,6 @@ $script:Config = @{
     RefreshMinutes  = 5
     Topmost         = $true
     BackgroundAlpha = 250
-    ViewMode        = 'ip'  # ip = 依固定 IP；name = 依名稱
     StatWindow      = 'session' # session = 本 5 小時；weekly = 本週；both = 兩個都顯示
     Theme           = 'auto' # auto = 跟隨 Windows 設定；light／dark 手動指定
     CloseToTray     = $true # 按 ✕ 時隱藏到狀態列，而不是真的結束
@@ -71,6 +70,10 @@ $script:Config = @{
 
 # 這兩個刻意固定、不做成選項：畫面高度有限，列太多會超出螢幕；
 # 太久沒回報的機器留著也只是干擾判讀。
+# 分組依據：name = 依 names.json 的名稱（多個 IP 對到同名會合併）；ip = 一個 IP 一列。
+# 兩者在「一個 IP 一個名稱」時結果相同，差別只在有沒有合併。
+$script:ViewMode      = 'name'
+
 $script:MaxRows       = 5    # 最多列出幾台，超過的併成一列「其他 N 台」
 $script:HideAfterDays = 30   # 超過這麼多天沒回報就不列出來
 
@@ -913,10 +916,7 @@ function Update-MachineBreakdown {
         return
     }
 
-    $mode = [string]$script:Config.ViewMode
-    if ($mode -eq 'person')  { $mode = 'name' }   # 舊版設定值，沿用
-    if ($mode -eq 'machine') { $mode = 'ip' }     # 已移除的檢視，退回依 IP
-    if ([string]::IsNullOrWhiteSpace($mode)) { $mode = 'ip' }
+    $mode = $script:ViewMode
 
     $rows = @(Group-Reports -Reports $reports -By $mode -NameMap $nameMap)
 
@@ -1299,30 +1299,6 @@ foreach ($label in $alphaOptions.Keys) {
 $menu.Items.Add($miAlpha) | Out-Null
 
 $menu.Items.Add((New-Object Windows.Controls.Separator)) | Out-Null
-
-$miView = New-Object Windows.Controls.MenuItem
-$miView.Header = '檢視方式'
-$viewOptions = [ordered]@{
-    '依固定 IP' = 'ip'
-    '依名稱'    = 'name'
-}
-foreach ($label in $viewOptions.Keys) {
-    $item = New-Object Windows.Controls.MenuItem
-    $item.Header = $label
-    $item.Tag = $viewOptions[$label]
-    $item.IsCheckable = $true
-    $item.IsChecked = ([string]$script:Config.ViewMode -eq $viewOptions[$label])
-    $item.Add_Click({
-        param($sender, $e)
-        $mode = [string]$sender.Tag
-        $script:Config.ViewMode = $mode
-        foreach ($sibling in $miView.Items) { $sibling.IsChecked = ([string]$sibling.Tag -eq $mode) }
-        Export-Config
-        Update-Widget
-    })
-    $miView.Items.Add($item) | Out-Null
-}
-$menu.Items.Add($miView) | Out-Null
 
 $miWindow = New-Object Windows.Controls.MenuItem
 $miWindow.Header = '統計區間'
