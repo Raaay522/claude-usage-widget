@@ -253,6 +253,10 @@ $script:Themes = @{
         Accent      = '#C96442'
         Error       = '#B91C1C'
         CloseHover  = '#D93A3A'
+        MenuBg      = '#FFFFFF'
+        MenuFg      = '#3D3B37'
+        MenuBorder  = '#D9D4C8'
+        MenuHover   = '#EFE9DC'
         BarLow      = '#2563EB'
         BarMid      = '#D97706'
         BarHigh     = '#DC2626'
@@ -273,6 +277,10 @@ $script:Themes = @{
         Accent      = '#D97757'
         Error       = '#F87171'
         CloseHover  = '#F87171'
+        MenuBg      = '#2F2E2C'
+        MenuFg      = '#D4D1CA'
+        MenuBorder  = '#454440'
+        MenuHover   = '#3D3C39'
         BarLow      = '#60A5FA'
         BarMid      = '#FBBF24'
         BarHigh     = '#FB7185'
@@ -431,6 +439,125 @@ function Set-ShellBackground {
 }
 
 <#
+    把右鍵選單也染成目前的主題色。
+
+    ContextMenu 用的是系統預設樣式，不會跟著視窗的色票走 ——
+    深色主題下會是刺眼的白底。這裡用 Resources 裡的 Style 一次套用，
+    子選單（更新間隔、統計區間那些）也會一起吃到，不必逐項設定。
+#>
+function Set-MenuTheme {
+    if ($null -eq $script:Menu) { return }
+
+    $t = Get-Theme
+
+    # 只設 Background/Foreground 是不夠的：WPF 內建的 MenuItem 模板左側有一條
+    # 固定顏色的圖示欄，深色主題下會露出一條白邊。要整片乾淨只能連模板一起換掉。
+    $xaml = @"
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+  <Style TargetType="{x:Type ContextMenu}">
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="{x:Type ContextMenu}">
+          <Border Background="__BG__" BorderBrush="__BORDER__" BorderThickness="1"
+                  CornerRadius="6" Padding="0,4,0,4">
+            <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle"/>
+          </Border>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+
+  <Style TargetType="{x:Type Separator}">
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="{x:Type Separator}">
+          <Border Height="1" Background="__BORDER__" Margin="10,4,10,4"/>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+
+  <Style TargetType="{x:Type MenuItem}">
+    <Setter Property="Background" Value="Transparent"/>
+    <Setter Property="Foreground" Value="__FG__"/>
+    <Setter Property="FontFamily" Value="Microsoft JhengHei UI"/>
+    <Setter Property="FontSize" Value="12"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="{x:Type MenuItem}">
+          <Border x:Name="Bd" Background="{TemplateBinding Background}" SnapsToDevicePixels="True">
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="24"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+              </Grid.ColumnDefinitions>
+
+              <TextBlock x:Name="Tick" Grid.Column="0" Text="&#x2713;"
+                         HorizontalAlignment="Center" VerticalAlignment="Center"
+                         FontSize="12" Foreground="__ACCENT__" Visibility="Collapsed"/>
+
+              <ContentPresenter Grid.Column="1" ContentSource="Header" RecognizesAccessKey="True"
+                                VerticalAlignment="Center" Margin="2,7,14,7"/>
+
+              <TextBlock x:Name="Arrow" Grid.Column="2" Text="&#x203A;"
+                         VerticalAlignment="Center" Margin="0,0,12,0"
+                         FontSize="14" Foreground="__MUTED__" Visibility="Collapsed"/>
+
+              <Popup x:Name="PART_Popup" Placement="Right" HorizontalOffset="-2"
+                     AllowsTransparency="True" Focusable="False" PopupAnimation="None"
+                     IsOpen="{Binding IsSubmenuOpen, RelativeSource={RelativeSource TemplatedParent}}">
+                <Border Background="__BG__" BorderBrush="__BORDER__" BorderThickness="1"
+                        CornerRadius="6" Padding="0,4,0,4" Margin="0,0,6,6">
+                  <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle"/>
+                </Border>
+              </Popup>
+            </Grid>
+          </Border>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsHighlighted" Value="True">
+              <Setter TargetName="Bd" Property="Background" Value="__HOVER__"/>
+            </Trigger>
+            <Trigger Property="IsChecked" Value="True">
+              <Setter TargetName="Tick" Property="Visibility" Value="Visible"/>
+            </Trigger>
+            <Trigger Property="HasItems" Value="True">
+              <Setter TargetName="Arrow" Property="Visibility" Value="Visible"/>
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+              <Setter Property="Foreground" Value="__FAINT__"/>
+            </Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+
+</ResourceDictionary>
+"@
+
+    $xaml = $xaml.Replace('__BG__',     $t.MenuBg).
+                  Replace('__FG__',     $t.MenuFg).
+                  Replace('__BORDER__', $t.MenuBorder).
+                  Replace('__HOVER__',  $t.MenuHover).
+                  Replace('__ACCENT__', $t.Accent).
+                  Replace('__MUTED__',  $t.Muted).
+                  Replace('__FAINT__',  $t.Faint)
+
+    try {
+        $dict = [Windows.Markup.XamlReader]::Parse($xaml)
+        $script:Menu.Resources = $dict
+        # Resources 裡的隱式樣式只會套到子孫，選單自己要明確指定
+        $script:Menu.Style = $dict[[Windows.Controls.ContextMenu]]
+    }
+    catch {
+        Write-Log "套用選單樣式失敗：$($_.Exception.Message)"
+    }
+}
+
+<#
     把目前色票套到所有「不會每次重畫」的元件上。
 
     進度條那些是每次更新時重新產生的，會自己拿到新色票，
@@ -451,6 +578,8 @@ function Set-WidgetTheme {
     $machinesTitle.Foreground  = $t.Muted
     $machinesDivider.BorderBrush = $t.Divider
     $footerDivider.BorderBrush   = $t.Divider
+
+    Set-MenuTheme
 }
 
 $script:BarWidth = 264.0
@@ -1337,7 +1466,9 @@ $miExit.Header = '結束'
 $miExit.Add_Click({ $window.Close() })
 $menu.Items.Add($miExit) | Out-Null
 
+$script:Menu = $menu
 $shell.ContextMenu = $menu
+Set-MenuTheme
 
 # ---------------------------------------------------------------- 啟動
 
